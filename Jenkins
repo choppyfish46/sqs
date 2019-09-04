@@ -1,0 +1,126 @@
+
+
+
+pipeline {
+   
+    agent { label 'ow-host' }
+   
+   tools {
+        "org.jenkinsci.plugins.terraform.TerraformInstallation" "terraform"
+    }
+
+   parameters {
+    choice(name: 'action', choices: 'create\ndestroy', description: 'Create/update or destroy sqs.')
+    string(name: 'region', defaultValue : 'us-east-2', description: "AWS region.")
+    string(name: 'sqs', defaultValue : 'ow-sqs-poc', description: "AWS region.")
+
+  }
+   
+  environment {
+        TF_HOME = tool('terraform')
+        TF_IN_AUTOMATION = "true"
+        PATH = "$TF_HOME:$PATH"
+        AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+        TF_VAR_access_key = credentials('AWS_ACCESS_KEY_ID')
+        TF_VAR_secret_key = credentials('AWS_SECRET_ACCESS_KEY')
+       
+    } 
+
+    stages {
+        stage('Setup') {
+      steps {
+        script {
+          currentBuild.displayName = "#" + env.BUILD_NUMBER + " " + params.action + " sqs-" + params.sqs
+          plan = params.sqs + '.plan'
+        }
+      }
+    }
+
+    stage('TF Plan') {
+      when {
+        expression { params.action == 'create' }
+      }
+      steps {
+        dir('infra/terraform/sqs'){   
+        script {
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
+            credentialsId: awsCredentialsId,
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',  
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+
+            
+
+            sh """
+              terraform init
+              terraform workspace new ${params.sqs} || true
+              terraform workspace select ${params.sqs}
+              terraform plan \
+                -var name=${params.sqs} \
+                -out ${plan}
+            """
+          }
+        }
+        }
+      }
+    }
+
+    stage('TF Apply') {
+      when {
+        expression { params.action == 'create' }
+      }
+      steps {
+         dir('infra/terraform/sqs'){
+        script {
+          input "Create/update Terraform sqs  in aws?" 
+
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
+            credentialsId: awsCredentialsId, 
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',  
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+
+            sh """
+             terraform apply -input=false ${plan}
+            """
+          }
+        }
+       }
+      }
+    }
+
+    stage('TF Destroy') {
+         when {
+        expression { params.action == 'destroy' }
+      }
+
+      steps {
+         dir('infra/terraform/sqs'){
+        script {
+          input "Destroy Terraform sqs in aws?" 
+
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
+            credentialsId: awsCredentialsId, 
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',  
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+
+            sh """
+              terraform init
+              terraform workspace select ${params.sqs}
+              terraform destroy -auto-approve
+            """
+          }
+        }
+      }
+      }
+
+    }
+        
+    }
+
+        post {
+            always {
+            cleanWs()
+                }
+        } 
+    
+}
